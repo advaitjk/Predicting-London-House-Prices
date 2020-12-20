@@ -1,0 +1,877 @@
+---
+title: 'Session 10: Data Science Capstone Project'
+author: "Advait Jayant"
+date: "`r Sys.Date()`"
+output: 
+    html_document:
+      number_sections: true
+      highlight: haddock
+      theme: spacelab
+      toc: yes
+      toc_depth: 2
+      toc_float:
+        collapsed: false
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+div.navy1 { background-color:#686868; border-radius: 5px; padding: 20px; border-style: groove; color: #ffffff;}
+
+</style>
+
+
+
+```{r, load_libraries, include = FALSE}
+
+if(!is.element("tidyverse", installed.packages()[,1]))
+{  install.packages("tidyverse")}
+
+if(!is.element("Hmisc", installed.packages()[,1]))
+{  install.packages("Hmisc")} #package for data summary using `describe`
+
+if(!is.element("ggplot2", installed.packages()[,1]))
+{  install.packages("ggplot2")} #package for plots
+if(!is.element("ggthemes", installed.packages()[,1]))
+{  install.packages("ggthemes")} #package to make fancier ggplots
+
+if(!is.element("janitor", installed.packages()[,1]))
+{ install.packages("janitor")} #package to visualize results of machine learning tools
+if(!is.element("rpart.plot", installed.packages()[,1]))
+{  install.packages("rpart.plot")} #package to visualize trees
+
+library(rpart.plot)
+library(caret)
+library(tidyverse) # the usual stuff: dplyr, readr, and other goodies
+library(lubridate)
+library(janitor) # clean_names()
+library(Hmisc)
+```
+
+# Introduction and learning objectives
+
+<div class = "navy1">
+The purpose of this exercise is to build an estimation engine to guide investment decisions in London house market. You will first build machine learning algorithms (and tune them) to estimate the house prices given variety of information about each property. Then, using your algorithm, you will choose 200 houses to invest in out of about 2000 houses on the market at the moment.
+
+
+<b>Learning objectives</b>
+ 
+<ol type="i">
+  <li>Using different data mining algorithms for prediction.</li>
+  <li>Dealing with large data sets</li>
+  <li>Tuning data mining algorithms</li>
+  <li>Interpreting data mining algorithms and deducing importance of variables</li>
+  <li>Using results of data mining algorithms to make business decisions</li>
+</ol>  
+</div>
+
+# Load data
+
+The most important part of conducting any analysis is ensuring that the dataset used to structure hypotheses and arrive at conclusions is the most optimal dataset for the problem statement. I begin the exploratory data analysis by performing several data cleaning processes such as converting character variables into factors and ensuring that the date variable is in the date datatype.
+
+
+```{r read-investigate}
+#read in the data
+
+london_house_prices_2019_training<-read.csv("training_data_assignment_with_prices.csv")
+london_house_prices_2019_out_of_sample<-read.csv("test_data_assignment.csv")
+
+
+
+#fix data types in both data sets
+
+#fix dates
+london_house_prices_2019_training <- london_house_prices_2019_training %>% mutate(date=as.Date(date))
+london_house_prices_2019_out_of_sample<-london_house_prices_2019_out_of_sample %>% mutate(date=as.Date(date))
+#change characters to factors
+london_house_prices_2019_training <- london_house_prices_2019_training %>% mutate_if(is.character,as.factor)
+london_house_prices_2019_out_of_sample<-london_house_prices_2019_out_of_sample %>% mutate_if(is.character,as.factor)
+
+#making sure out of sample data and training data have the same number of factors
+a<-union(levels(london_house_prices_2019_training$postcode_short),levels(london_house_prices_2019_out_of_sample$postcode_short))
+london_house_prices_2019_training$postcode_short<- factor(london_house_prices_2019_training$postcode_short,levels=a)
+london_house_prices_2019_out_of_sample$postcode_short<-factor(london_house_prices_2019_out_of_sample$postcode_short, levels=a)
+
+b<-union(levels(london_house_prices_2019_training$water_company),levels(london_house_prices_2019_out_of_sample$water_company))
+london_house_prices_2019_training$water_company<- factor(london_house_prices_2019_training$water_company,levels=b)
+london_house_prices_2019_out_of_sample$water_company<-factor(london_house_prices_2019_out_of_sample$water_company, levels=b)
+
+c<-union(levels(london_house_prices_2019_training$nearest_station),levels(london_house_prices_2019_out_of_sample$nearest_station))
+london_house_prices_2019_training$nearest_station<- factor(london_house_prices_2019_training$nearest_station,levels=c)
+london_house_prices_2019_out_of_sample$nearest_station<-factor(london_house_prices_2019_out_of_sample$nearest_station, levels=c)
+
+d<-union(levels(london_house_prices_2019_training$district),levels(london_house_prices_2019_out_of_sample$district))
+london_house_prices_2019_training$district<- factor(london_house_prices_2019_training$district,levels=d)
+london_house_prices_2019_out_of_sample$district<-factor(london_house_prices_2019_out_of_sample$district, levels=d)
+
+
+#take a quick look at what's in the data
+str(london_house_prices_2019_training)
+str(london_house_prices_2019_out_of_sample)
+
+
+
+```
+
+Upon confirming that the dataset is suitable, I set a seed to facilitate easier duplication of results, followed by splitting the dataset into a training set and a testing set. I use the training set to develop a model that can evaluate predictions correctly on unknown sample points, i.e, the testing set.
+
+```{r split the price data to training and testing}
+#let's do the initial split
+library(rsample)
+set.seed(69)
+train_test_split <- initial_split(london_house_prices_2019_training, prop = 0.75) #training set contains 75% of the data
+# Create the training dataset
+train_data <- training(train_test_split)
+test_data <- testing(train_test_split)
+```
+
+
+# Visualize data 
+
+Before building any models, it is critical to analyse the distribution of the price of each house and its relationship with the several factors that possess the potential to impact its fluctuations.
+
+## Price Distribution
+
+``` {r}
+ggplot(data=train_data, aes(x=price)) + geom_histogram(aes(y=..density..)) + geom_density()
+```   
+We can clearly see that this distribution actually does follow the 80:20 law. 80% of the investments come from the cheaper 20% of the houses and we can clearly see that there are very few people who actually purchase properties about 600K.
+
+Above is a histogram combined with a density estimate of how many properties were sold at each prize point. Unsurprisingly, the distribution looks like it follows a power law. The easiest way to understand the power law distribution is to think of the famous 80:20 rule. In business this often translates to “80% of your revenue comes from 20% of your customers”. In the context of this dataset, you can make a very rough estimate that 80% of purchases were made in the lowest 20% of the price range.
+
+``` {r}
+ggplot(data=train_data, aes(x=log(price))) + geom_histogram(aes(y=..density..)) + geom_density()
+exp(13)
+```
+We can see that the log of the prices is normally distributed with a peak at 13 which translates to ~£450,000. 
+
+## Grouping the Houses by Whether they are old or new 
+
+``` {r}
+by_whether_old_or_new <- select(train_data, price, whether_old_or_new) %>%
+  group_by(whether_old_or_new) %>%
+  summarise(Count=n(), Mean.Price=mean(price), St.Dev.Price=sd(price), Median.Price=median(price))
+
+a <- ggplot(by_whether_old_or_new, aes(x=whether_old_or_new, y=Count, fill=whether_old_or_new)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+b <- ggplot(by_whether_old_or_new, aes(x=whether_old_or_new, y=Mean.Price, fill=whether_old_or_new)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+c <- ggplot(by_whether_old_or_new, aes(x=whether_old_or_new, y=St.Dev.Price, fill=whether_old_or_new)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+d <- ggplot(by_whether_old_or_new, aes(x=whether_old_or_new, y=Median.Price, fill=whether_old_or_new)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+
+library(ggpubr)
+ggarrange(a, b, c, d, 
+          ncol = 2, nrow = 2, 
+          common.legend = TRUE, legend = "bottom")
+```
+
+``` {r}
+ggplot(train_data, aes(x=whether_old_or_new, y=price)) +
+  stat_ydensity(trim = FALSE, aes(fill = whether_old_or_new)) +
+  scale_y_log10(breaks=round(10^seq(3.6,8,0.2))) +
+  coord_trans(y = "log10") +
+  coord_flip() +
+  
+  theme(axis.text.x= element_text(angle=45, hjust=1))
+```
+It is quite unsurprising that most of the houses in London were not newly built. The median price suggests a small difference in price between newly built homes and older homes. However, we cannot actually base many conclusions on this because there are only 7 new houses in this dataset. Both the distributions seem quite similar and we can observe that 400K seems to be the most popular pricing point. 
+
+## Grouping by Property Type 
+
+``` {r}
+by_pt <- select(train_data, price, property_type) %>%
+  group_by(property_type) %>% 
+  summarise(Count= n(), Mean.Price=mean(price), St.Dev.Price=sd(price), Median.Price=median(price)) 
+
+a <- ggplot(by_pt, aes(x=property_type, y=Count, fill=property_type)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+b <- ggplot(by_pt, aes(x=property_type, y=Mean.Price, fill=property_type)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+c <- ggplot(by_pt, aes(x=property_type, y=St.Dev.Price, fill=property_type)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+d <- ggplot(by_pt, aes(x=property_type, y=Median.Price, fill=property_type)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+
+library(ggpubr)
+ggarrange(a, b, c, d, 
+          ncol = 2, nrow = 2, 
+          common.legend = TRUE, legend = "bottom")
+
+```
+The count variable showcases the number of purchases for each property type. The most purchased flats in London were Flats, followed by Terrace Houses. Whereas there are considerably lesser Semi-Detached and Detached Houses (which probably stems from the fact that these cost more and Detached Property Types are considerably pricier). Apart from detached houses, all the other property types have roughly similar prices. From the standard deviations, can see that Detached and Terraced houses vary considerably in price, followed by Flats, whereas Semi-Detached house prices are comparatively less spread out.
+
+``` {r}
+ggplot(train_data, aes(x=property_type, y=price)) +
+  stat_ydensity(trim = FALSE, aes(fill = property_type)) +
+  scale_y_log10(breaks=round(10^seq(3.6,8,0.2))) +
+  coord_trans(y = "log10") +
+  coord_flip() +
+  theme(axis.text.x= element_text(angle=45, hjust=1))
+```
+
+The violin graphs allow us to compare the distribution of house prices for each property type. From the plot envisioned, we can see that the distributions for Terraced and Semi-Detached Houses are quite similar. Whereas, Flats are priced lower than the previous two and detached houses significantly higher than the others. 
+
+## Grouping by whether Freehold or Leasehold
+
+
+``` {r}
+by_freehold_or_leasehold <- select(train_data, price, freehold_or_leasehold) %>%
+  group_by(freehold_or_leasehold) %>% 
+  summarise(Count= n(), Mean.Price=mean(price), St.Dev.Price=sd(price), Median.Price=median(price)) 
+
+by_freehold_or_leasehold
+
+a <- ggplot(by_freehold_or_leasehold, aes(x=freehold_or_leasehold, y=Count, fill=freehold_or_leasehold)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+b <- ggplot(by_freehold_or_leasehold, aes(x=freehold_or_leasehold, y=Mean.Price, fill=freehold_or_leasehold)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+c <- ggplot(by_freehold_or_leasehold, aes(x=freehold_or_leasehold, y=St.Dev.Price, fill=freehold_or_leasehold)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+d <- ggplot(by_freehold_or_leasehold, aes(x=freehold_or_leasehold, y=Median.Price, fill=freehold_or_leasehold)) +
+  geom_bar(position="dodge", stat='identity', width=0.9) 
+
+
+library(ggpubr)
+ggarrange(a, b, c, d, 
+          ncol = 2, nrow = 2, 
+          common.legend = TRUE, legend = "bottom")
+
+```
+
+From the plot, we can clearly see that there were nearly 33% more freehold properties being purchased than leasehold properties. 
+
+``` {r}
+ggplot(train_data, aes(x=freehold_or_leasehold, y=price)) +
+  stat_ydensity(trim = FALSE, aes(fill = freehold_or_leasehold)) +
+  scale_y_log10(breaks=round(10^seq(3.6,8,0.2))) +
+  coord_trans(y = "log10") +
+  coord_flip() +
+  theme(axis.text.x= element_text(angle=45, hjust=1))
+```
+The price difference can be clearly visualised through the above plot. The leasehold peak is approximately at £400,000 whereas the leasehold peak is around £500,000. Therefore, there is definitely a correlation between the price and whether the property is a leasehold or a freehold. The more expensive leasehold properties may stem from the fact that most leasehold properties are in Central London. 
+
+# Correlation Plots
+
+``` {r}
+# Insignificant correlations are leaved blank
+library("GGally")
+london_house_prices_2019_training %>% 
+  select(-ID) %>% #keep Y variable last
+  ggcorr(method = c("pairwise", "pearson"), layout.exp = 2,label_round=2, label = TRUE,label_size = 2,hjust = 1,nbreaks = 5,size = 2,angle = -20)
+```
+From the correlation matrix, we can clearly observe that the price has a high positive correlation with the total floor area, number of inhabitable rooms, current CO2 emissions, potential CO2 emissions, and average income. These are the variables that I need to be careful of while including in my models due to the problem of Multicollinearity. Multicollinearity happens when one predictor variable in a multiple regression model can be linearly predicted from the others with a high degree of accuracy - this can lead to skewed or misleading results. Luckily, decision trees and boosted trees algorithms are immune to multicollinearity by nature. 
+
+
+# Regression Analysis
+
+## New Variables
+
+I will begin the regression analysis by creating a few new variables that I feel will be important in order to perform price prediction. The variables I create are:
+- total_population_per_zone: Population per zone 
+- average_income_per_zone: Average Income Per Zone
+- average_distance_to_station_per_zone: Average Distance to Station Per Zone
+
+```{r new_vars}
+library(rlist)
+a <- sapply(train_data, function(x) length(unique(x)))
+print(a)
+zone_counts1 <- list()
+class(a["london_zone"])
+class(train_data[["london_zone"]])
+
+
+total_population_per_zone <- train_data %>% 
+  group_by(london_zone) %>% 
+  summarise(total_population_per_zone = sum(population))
+
+train_data <- train_data %>% 
+  left_join(total_population_per_zone, by = "london_zone")
+
+average_income_per_zone <- train_data %>% 
+  group_by(london_zone) %>%
+  summarise(average_income_per_zone1 = mean(average_income))
+
+train_data <- train_data %>% 
+  left_join(average_income_per_zone, by = "london_zone")
+
+average_distance_to_station_per_zone <- train_data %>% 
+  group_by(london_zone) %>%
+  summarise(average_distance_to_station_per_zone = mean(distance_to_station))
+
+train_data <- train_data %>% 
+  left_join(average_distance_to_station_per_zone, by = "london_zone")
+
+
+```
+
+
+## First Linear Regression Model
+
+```{r}
+
+#Define control variables
+CVfolds=15
+indexProbs <- createMultiFolds(train_data$price, CVfolds,times = 1) 
+control <- trainControl(method = "cv",  
+                        number = CVfolds, 
+                        returnResamp = "final", 
+                        savePredictions = "final", 
+                        index = indexProbs,
+                        sampling = NULL)
+
+```
+
+I build four linear regression models to fit the best prediction line between the explanatory variable and dependent variables.
+
+``` {r}
+
+#we are going to train the model and report the results using k-fold cross validation
+model1_lm<-train(
+    price ~ property_type + freehold_or_leasehold + distance_to_station + whether_old_or_new + longitude + altitude + num_tube_lines,
+    train_data,
+   method = "lm",
+    trControl = control
+   )
+
+# summary of the results
+summary(model1_lm)
+```
+I analysed the significance of the variables using the p-value (<0.05) to find the model with the lowest value of Root Mean Square Error (RMSE) and highest R-squared. The greater the R-squared of a model - the better it performs.
+The first model that we built has an adjusted R-Squared of 0.1729 and is a terrible linear regression model. Now, we will fine tune the hyperparameters based on the importance of the variables. 
+
+```{r}
+# we can check variable importance as well
+importance <- varImp(model1_lm, scale=TRUE)
+plot(importance)
+```
+
+### Predict the values in testing and out of sample data
+
+```{r}
+# We can predict the testing values
+
+predictions <- predict(model1_lm,test_data)
+
+lr_results<-data.frame(  RMSE = RMSE(predictions, test_data$price), 
+                            Rsquare = R2(predictions, test_data$price))
+
+                            
+lr_results                         
+
+#We can predict prices for out of sample data the same way
+predictions_oos <- predict(model1_lm,london_house_prices_2019_out_of_sample)
+```
+
+
+## Second Linear Regression Model
+
+```{r}
+set.seed(69)
+# train_data <- train_data %>% 
+#   mutate(average_distance_to_station1 = unlist(average_distance_to_station1)) %>% 
+#   mutate(average_income_per_zone = unlist(average_income_per_zone)) %>% 
+#   mutate(population_per_zone = unlist(population_per_zone))
+train_data$average_distance_to_station <- unlist(train_data$average_distance_to_station)
+train_data$average_income_per_zone <- unlist(train_data$average_income_per_zone)
+train_data$population_per_zone <- unlist(train_data$population_per_zone)
+train_data <- train_data[!is.na(train_data$price),]
+train_data <- train_data[!is.na(train_data$population),]
+
+# + total_floor_area + number_habitable_rooms + energy_consumption_current + latitude + longitude + average_income + type_of_closest_station + distance_to_station + average_distance_to_station_per_zone*(as.factor(london_zone)) + total_population_per_zone + average_income_per_zone + average_income_per_zone*(as.factor(london_zone))
+
+model2_lm<-train(price ~ property_type + number_habitable_rooms + energy_consumption_current + longitude + average_income
+              + type_of_closest_station + distance_to_station,
+        train_data,
+        method = "lm",
+        trControl = control, 
+        na.action=na.omit)
+
+ #total_floor_area*I(as.factor(london_zone))
+
+# summary of the results
+summary(model2_lm)
+
+
+
+```
+### Predict the values in testing and out of sample data
+
+We measure the performance of our linear regression model with the RMSE and RSquare metrics.
+
+```{r}
+# We can predict the testing values
+
+predictions <- predict(model2_lm,test_data)
+
+lr_results<-data.frame(  RMSE = RMSE(predictions, test_data$price), 
+                            Rsquare = R2(predictions, test_data$price))
+
+                            
+lr_results                         
+
+#We can predict prices for out of sample data the same way
+predictions_oos <- predict(model2_lm,london_house_prices_2019_out_of_sample)
+```
+
+Now, we will fine tune the hyperparameters based on the importance of the variables. 
+
+```{r}
+# we can check variable importance as well
+importance <- varImp(model2_lm, scale=TRUE)
+plot(importance)
+```
+
+## Third Linear Regression Model
+
+``` {r}
+set.seed(69)
+#we are going to train the model and report the results using k-fold cross validation
+model3_lm<-train(
+    price ~ property_type  + total_floor_area + number_habitable_rooms  + latitude + longitude + average_income + type_of_closest_station + distance_to_station + total_floor_area*(as.factor(london_zone)),
+    train_data,
+   method = "lm",
+    trControl = control
+   )
+
+ #total_floor_area*I(as.factor(london_zone))
+
+# summary of the results
+summary(model3_lm)
+```
+### Predict the values in testing and out of sample data
+
+```{r}
+# We can predict the testing values
+
+predictions <- predict(model3_lm,test_data)
+
+lr_results<-data.frame(  RMSE = RMSE(predictions, test_data$price), 
+                            Rsquare = R2(predictions, test_data$price))
+
+                            
+lr_results                         
+
+#We can predict prices for out of sample data the same way
+predictions_oos <- predict(model3_lm,london_house_prices_2019_out_of_sample)
+```
+
+Now, we will fine tune the hyperparameters based on the importance of the variables. 
+
+```{r}
+# we can check variable importance as well
+importance <- varImp(model3_lm, scale=TRUE)
+plot(importance)
+```
+
+## Fourth Linear Regression Model 
+
+``` {r}
+set.seed(69)
+#we are going to train the model and report the results using k-fold cross validation
+model4_lm<-train(price ~ distance_to_station + num_tube_lines + property_type+ latitude + longitude + altitude + postcode_short + water_company + total_floor_area * (as.factor(london_zone)),
+    train_data,
+   method = "lm",
+    trControl = control
+   )
+
+ #total_floor_area*I(as.factor(london_zone))
+
+# summary of the results
+summary(model4_lm)
+```
+
+### Predict the values in testing and out of sample data
+
+```{r}
+# We can predict the testing values
+set.seed(69)
+predictions <- predict(model4_lm,test_data)
+
+lr_results<-data.frame(RMSE = RMSE(predictions, test_data$price), 
+                       Rsquare = R2(predictions, test_data$price))
+
+                            
+lr_results                         
+
+#We can predict prices for out of sample data the same way
+predictions_oos <- predict(model4_lm,london_house_prices_2019_out_of_sample)
+```
+
+The fourth linear regression has the best performance out of the four since it has an adjusted R-Square of 0.85 on the training set and 0.8 on the testing set. Now let us take a look at the importance of the final variables. 
+
+```{r}
+# we can check variable importance as well
+importance <- varImp(model2_lm, scale=TRUE)
+plot(importance)
+```
+The number of habitable rooms, average income, and type of closest station are the three most important factors from our linear regression. 
+
+## Fit a tree model
+
+Next, I build a decision tree model for our training dataset in order to compare its performance to that of the linear regression model. 
+
+```{r tree model}
+
+model1_tree <- train(
+  price ~ distance_to_station + water_company + property_type + whether_old_or_new + latitude + longitude,
+  train_data,
+  method = "rpart",
+  trControl = control,
+  tuneLength=10
+    )
+
+#You can view how the tree performs
+model1_tree$results
+
+#You can view the final tree
+rpart.plot(model1_tree$finalModel)
+
+#you can also visualize the variable importance
+importance <- varImp(model1_tree, scale=TRUE)
+plot(importance)
+
+
+#Predict the probabilities using the tree model in testing data
+predictions_tree <- predict(model1_tree,test_data)
+
+tree_results<-data.frame(  RMSE = RMSE(predictions_tree, test_data$price), 
+                            Rsquare = R2(predictions_tree, test_data$price))
+tree_results 
+
+```
+ I use an initial set of parameters to build a model with a tune length of 10. The adjusted R-square starts off at 46.16%. 
+ 
+``` {r}
+model2_tree <- train(
+  price ~ distance_to_station + num_tube_lines + property_type + latitude + longitude + altitude + postcode_short + water_company + total_floor_area*(as.factor(london_zone)),
+  train_data,
+  method = "rpart",
+  trControl = control,
+  tuneLength=10
+  )
+
+#You can view how the tree performs
+model2_tree$results
+
+#You can view the final tree
+rpart.plot(model2_tree$finalModel)
+
+#you can also visualize the variable importance
+importance <- varImp(model2_tree, scale=TRUE)
+plot(importance)
+
+
+#Predict the probabilities using the tree model in testing data
+predictions_tree <- predict(model2_tree,test_data)
+
+tree_results<-data.frame(  RMSE = RMSE(predictions_tree, test_data$price), 
+                            Rsquare = R2(predictions_tree, test_data$price))
+tree_results 
+```
+
+``` {r}
+set.seed(69)
+custom_grid <- expand.grid(cp = seq( 0.00005, 0.00015,0.00005))
+model3_tree <- train(
+  price ~ total_floor_area + average_income + longitude + latitude + property_type + london_zone + distance_to_station + postcode_short + district + energy_consumption_current + total_floor_area*(as.factor(london_zone)),
+  train_data, 
+  method = "rpart",
+  metric="Rsquared",
+  trControl = control,
+  tuneGrid=custom_grid)
+
+print(model3_tree)
+plot(model3_tree)
+rpart.plot(model3_tree$finalModel)
+
+#Predict the probabilities using the tree model in testing data
+predictions_tree <- predict(model3_tree$finalModel,test_data)
+
+tree_results<-data.frame(  RMSE = RMSE(predictions_tree, test_data$price), 
+                            Rsquare = R2(predictions_tree, test_data$price))
+tree_results 
+```
+
+I then use pruning to tune the hyperparameters to make the most efficient model by selecting appropriate values of the complexity parameter. The complexity parameter determines the size of the decision tree and aids in choosing the optimal value of the size of the tree. The expand grid function now determines the range of the complexity parameter and find the best R-squared. 
+
+``` {r}
+set.seed(69)
+custom_grid <- expand.grid(cp = seq( 0.00005, 0.00015,0.00005))
+model4_tree <- train(
+  price ~ total_floor_area + average_income + longitude + latitude+ current_energy_rating+ num_tube_lines +type_of_closest_station + property_type + london_zone + distance_to_station +postcode_short + district + energy_consumption_current,
+  train_data, 
+  method = "rpart",
+  metric="Rsquared",
+  trControl = control,
+  tuneGrid=custom_grid)
+
+print(model4_tree)
+plot(model4_tree)
+rpart.plot(model4_tree$finalModel)
+
+#Predict the probabilities using the tree model in testing data
+predictions_tree <- predict(model4_tree,test_data)
+tree_results<-data.frame(  RMSE = RMSE(predictions_tree, test_data$price), 
+                            Rsquare = R2(predictions_tree, test_data$price))
+tree_results
+```
+The decision tree yields an adjusted R-Square of 82.57% on the testing set. The linear regression model that I built performs better because there is a large number of features in the dataset and low noise. Decision trees are also better suited at predicting categorical independent variables whereas their performance is compromised while predicting discrete independent variables such as price. 
+
+The linear regression model that I built performs better because there is a large number of features in the dataset and low noise. Decision trees are also better suited at predicting categorical independent variables whereas their performance is compromised while predicting discrete independent variables such as price. 
+
+## Gradient Boosting
+```{r message=FALSE}
+set.seed(69)
+modelLookup("gbm")
+custom_grid<-expand.grid(interaction.depth = 9,n.trees = 500,shrinkage = 0.075, n.minobsinnode = 5)
+
+model1_gbm <- train(price ~ latitude + longitude + altitude + distance_to_station + water_company + property_type  + postcode_short + total_floor_area*(as.factor(london_zone)), data=train_data,
+                 method = "gbm", 
+                 trControl = control,
+                 tuneGrid =custom_grid,
+                 metric = "RMSE",
+                 verbose = FALSE
+                 )
+
+print(model1_gbm)
+
+```
+
+```{r}
+set.seed(69)
+predictions <- predict(model1_gbm,test_data)
+# Model prediction performance
+gbm_results<-data.frame(  RMSE = RMSE(predictions, test_data$price), 
+                            Rsquare = R2(predictions, test_data$price)
+)
+gbm_results
+```
+
+## Least Absolute Shrinkage and Selection Operator
+
+```{r lasso}
+set.seed(69)
+# Using an experimental sequnce to find the optimal value of lambda 
+lambda_seq <- seq(0, 5000, length = 1000)
+# LASSO regression with using 15-fold cross validation to select the best lambda amongst the lambdas specified in "lambda_seq".
+lasso <- train(
+ price ~ distance_to_station + water_company+ property_type+latitude+ longitude+ postcode_short+ total_floor_area*(as.factor(london_zone)),
+ data = train_data,
+ method = "glmnet",
+  preProc = c("center", "scale"), # This option standardizes the data before running the LASSO regression
+  trControl = control,
+  tuneGrid = expand.grid(alpha = 1, lambda = lambda_seq) # alpha=1 specifies to run a LASSO regression. 
+  )
+
+plot(lasso)
+
+```
+
+```{r}
+
+predictions_lasso <- predict(lasso,test_data)
+lasso_results<-data.frame(  RMSE = RMSE(predictions_lasso, test_data$price), 
+                            Rsquare = R2(predictions_lasso, test_data$price)
+)
+lasso_results
+
+```
+
+## Random Forest
+
+```{r}
+
+modelLookup("ranger")
+# Define the tuning grid: tuneGrid
+Gridtune= data.frame(mtry=c(10:15),
+                     min.node.size = 5,
+                     splitrule="variance")
+
+set.seed(69)
+model1_randomforest <- train(price ~ poly(total_floor_area,2) +average_income+ longitude+latitude+current_energy_rating+num_tube_lines +type_of_closest_station+property_type+london_zone+distance_to_station +water_company+freehold_or_leasehold , 
+               data = train_data, 
+               method = "ranger",
+               trControl=control,
+               # calculate importance
+               importance="permutation", 
+               tuneGrid = Gridtune,
+               num.trees = 200)
+
+
+varImp(model1_randomforest)
+
+plot(varImp(model1_randomforest))
+
+summary(model1_randomforest)
+
+print(model1_randomforest)
+
+predictions_rf <-predict(model1_randomforest,test_data)
+
+# Model prediction performance
+rf_results<-data.frame(  RMSE = RMSE(predictions_rf, test_data$price), 
+                            Rsquare = R2(predictions_rf, test_data$price))
+rf_results 
+
+```
+
+
+## Comparing performance of all the created models
+
+Basing on the comparison of all the models,
+```{r}
+lr_results 
+
+tree_results 
+
+lasso_results 
+
+rf_results 
+
+gbm_results 
+```
+
+The best model according to our analysis is surprisingly the simplest model, i.e, the linear regression model with an adjusted R2 of 0.84. 
+ 
+## Stacking
+
+I now combine all of the best models that I created together to build a model that will be able to evaluate more precise predictions by stacking them together - this is an ensemble method that combines heterogeneous weak learners to create a powerful meta-model. ince the Lasso Regression and Linear Regression are highly correlated, I build my stacked learner from the Decision Tree, the Lasso Regression, the Random Forest, and the GBM. 
+
+```{r}
+multimodel<- list(tree=model4_tree,lasso=lasso,ranger= model1_randomforest, gbm=model1_gbm)
+class(multimodel)<- "caretList"
+```
+
+#Visualising results
+```{r}
+modelCor(resamples(multimodel))
+dotplot(resamples(multimodel), metric="Rsquared")
+xyplot(resamples(multimodel), metric="Rsquared")
+splom(resamples(multimodel), metric="Rsquared")
+```
+
+
+```{r}
+library(caret)
+library(caretEnsemble)
+model_list<- caretStack(multimodel, #creating a model that stacks both models together
+                        trControl=control,
+                        method="lm",
+                        metric="RMSE")
+
+
+summary(model_list)
+
+
+```
+
+
+
+```{r}
+
+predictions_stacked <- predict(model_list,test_data)
+stacked_results<-data.frame(  RMSE = RMSE(predictions_stacked, test_data$price), 
+                            Rsquare = R2(predictions_stacked, test_data$price)
+)
+stacked_results
+
+```
+
+I perform 15-fold cross-validation to confirm the performance of the stacked model and find an adjusted R-squared of 84.68% on the training set and 88.03% on the testing set. 
+
+As we can see, the Rsquared achieves the best results in comparison to our all previous models. Therefore, we will use this model as an estimation engine to guide the investment on the housing market in London.
+
+### Performance on test data
+
+First I will check the preformance of our model on the test dataset.
+
+```{r}
+numchoose=200 #choosing number of investments
+set.seed(1)
+random_mult<-1/(1-runif(nrow(test_data),min=-0.2, max=0.2))
+test_data$asking_price<-test_data$price*random_mult #creating the asking_price simulation
+
+#Assume that these are asking prices
+
+#now predict the value of houses
+test_data$predict<-predict(model_list,test_data)
+
+#choose the ones that you want to invest here
+
+#Let’s find the profit margin given our predicted price and asking price
+
+test_data<-test_data %>% 
+  mutate(profitMargin=(predict-asking_price)/(asking_price)) %>% 
+  arrange(-profitMargin)
+#Make sure you chooses exactly 200 of them
+test_data$invest=0
+test_data[1:numchoose,]$invest=1
+
+#let's find the actual profit
+test_data<-test_data %>% 
+  mutate(profit=(price-asking_price)/(asking_price), actualProfit=invest*profit)
+
+mean(test_data$profit)
+
+sum(test_data$actualProfit)/numchoose
+
+
+
+
+```
+
+
+
+
+
+# Pick investments
+
+In this section I will use the best algorithm I identified to choose 200 properties from the out of sample data.
+
+```{r,warning=FALSE,  message=FALSE }
+
+numchoose=200
+
+oos<-london_house_prices_2019_out_of_sample
+
+
+oos[is.na(oos[,"population"]), "population"] <- mean(oos[,"population"], na.rm = TRUE)
+
+#predict the value of houses
+oos$predict <- predict(model_list,oos)
+
+oos<-oos %>% 
+  mutate(profitMargin=(predict-asking_price)/(asking_price)) %>% 
+  arrange(-profitMargin)
+
+oos$buy=0
+oos[1:numchoose,]$buy=1
+
+oos %>% 
+  filter(buy == 1) %>% 
+  summarise(profit = sum(predict-asking_price))
+
+oos %>% 
+  filter(buy == 1) %>% 
+  summarise(investment = sum(asking_price))
+
+
+oos <- oos[,!(names(oos) %in% c("profitMargin"))]
+  
+write.csv(oos,"Jayant_Advait.csv")
+```
